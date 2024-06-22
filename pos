@@ -1,0 +1,370 @@
+#!/usr/bin/env perl
+
+package Item;
+use Mojo::Base -base, -signatures;
+
+use Math::Currency qw(Money);
+
+has [qw/barcode name _cost/];
+has inventory => 1;
+
+sub cost ($self, $cost=undef) {
+  defined $cost ? $self->_cost($cost) : Money(defined $self->_cost ? $self->_cost : 0);
+}
+
+sub new {
+  my $self = shift->SUPER::new;
+  return undef unless @_ >= 3;
+  $self->barcode(shift)->name(shift)->cost(shift);
+  $self->inventory(shift) if $_[0];
+  return $self;
+}
+
+package Cart;
+use Mojo::Base -base, -signatures;
+
+use Math::Currency qw(Money);
+use Mojo::Collection;
+use Scalar::Util qw(looks_like_number);
+
+use constant TAX_RATE => 9.17 / 100;
+
+has finish => 0;
+has items => sub { Mojo::Collection->new };
+has store => sub { die };
+
+sub add_item($self, $item) {
+  return unless $item && $item->barcode;
+  return push @{$self->items}, $item if $self->store->carts->map(sub { $_->items->grep(sub { $_->barcode eq $item->barcode })->size })->reduce(sub { $a + $b }, 0) < $self->store->inventory->first(sub{$_->barcode eq $item->barcode})->inventory; 
+  return undef;
+}
+
+sub end_sale ($self) {
+  say sprintf "Subtotal for %d items: %s", $self->size, $self->subtotal;
+  say sprintf "%.4f%% Tax: %s", TAX_RATE * 100, $self->tax;
+  say sprintf "Balance Due: %s", $self->total;
+  print "Enter amount paid: ";
+  chomp(my $paid = <STDIN>);
+  $paid = substr($paid, 0, 5);
+  $paid =~ s/[^\d\.]//g;
+  say "End sale aborted" and return unless looks_like_number($paid);
+  $paid = Money($paid);
+  say sprintf "Change due: %s", $paid - $self->total;
+  Change->new($paid - $self->total);
+  print "\n";
+  $self->finish(1);
+}
+
+sub size { shift->items->size };
+
+sub subtotal ($self) { $self->items->reduce(sub { $a + $b->cost }, Money(0)) }
+
+sub tax ($self) { $self->subtotal * TAX_RATE }
+
+sub total ($self) { $self->subtotal + $self->tax };
+
+sub void_item ($self) {
+  print "Scan item to void from cart: ";
+  chomp(my $barcode = <STDIN>);
+  $barcode = substr($barcode, 0, 20);
+  $barcode = chr hex $barcode =~ s/^%%//r if $barcode =~ /^%%/;
+  print "How many to remove? (enter 0 for all, default is 1) ";
+  chomp(my $qty = <STDIN>);
+  $qty = substr($qty, 0, 5);
+  $qty =~ s/\D//g;
+  $qty ||= 1;
+  $self->void_item($barcode, $qty);
+  say "Voided $barcode";
+  my $delete = 0;
+  $self->inventory->reduce(sub {
+    push @$a, $b unless $delete == 1 || $b->barcode eq $barcode;
+    $delete++ if $b->barcode eq $barcode;
+  }, Mojo::Collection->new);
+}
+
+package Change;
+use Mojo::Base -base, -signatures;
+
+sub new {
+  my $self = shift->SUPER::new;
+  my $amount = shift->as_float;
+  my @denominations = (
+    100.00, # $100 bills
+    50.00,  # $50 bills
+    20.00,  # $20 bills
+    10.00,  # $10 bills
+    5.00,   # $5 bills
+    1.00,   # $1 bills
+    0.25,   # Quarters
+    0.10,   # Dimes
+    0.05,   # Nickels
+    0.01    # Pennies
+  );
+  my @denom_names = (
+    '$100 bills', '$50 bills', '$20 bills', '$10 bills', '$5 bills', '$1 bills',
+    'Quarters', 'Dimes', 'Nickels', 'Pennies'
+  );
+  my @quantities;
+
+  foreach my $denom (@denominations) {
+    my $count = int($amount / $denom);
+    push @quantities, $count;
+    $amount -= $count * $denom;
+  }
+
+  for my $i (0..$#quantities) {
+    print "  $denom_names[$i]: $quantities[$i]\n" if $quantities[$i] > 0;
+  }
+}
+
+package Store;
+use Mojo::Base -base, -signatures;
+
+use Math::Currency qw(Money);
+use Mojo::Collection;
+use Scalar::Util qw(looks_like_number);
+use Storable ();
+use Term::ReadKey;
+
+has carts => undef;
+has file => sub { die };
+has inventory => undef;
+has name => 'The Store';
+
+sub add_item ($self) {
+  print "Adding new item, scan new item barcode: ";
+  my $barcode = $self->get_barcode(1) or return;
+  my $item = $self->inventory->first(sub{$_->barcode eq $barcode});
+  say sprintf "Already added item %s (%s)", $item->name, $item->barcode and return $self->edit_item($item) if $item;
+  print "Add item name for new barcode $barcode: ";
+  chomp(my $name = <STDIN>);
+  say "Add item aborted" and return unless $name;
+  print "Add item $name cost: ";
+  chomp(my $cost = <STDIN>);
+  $cost = substr($cost, 0, 5);
+  $cost =~ s/[^\d\.]//g;
+  $cost ||= sprintf '%.2f', rand(10);
+  say "Add item aborted" and return unless looks_like_number($cost);
+  print "Add item $name quantity: ";
+  chomp(my $qty = <STDIN>);
+  $qty = substr($qty, 0, 5);
+  $qty =~ s/\D//g;
+  $qty ||= 1;
+  say "Add item aborted" and return unless looks_like_number($qty);
+  $item = Item->new($barcode, $name, $cost, $qty);
+  push @{$self->inventory}, $item;
+  say sprintf "Added %s (%s) for %s to inventory!\n", $item->name, $item->barcode, $item->cost;
+  $self->store;
+}
+
+sub cart ($self) {
+  my $cart = $self->carts->first(sub{!$_->finish});
+  return $cart if $cart;
+  say "Starting new cart";
+  push @{$self->carts}, Cart->new(store => $self);
+  return $self->carts->first(sub{!$_->finish});
+}
+
+sub close ($self) {
+  if (!$self->is_open) {
+    say sprintf "%s is already closed", $self->name;
+  }
+  else {
+    my $items = $self->carts->reduce(sub { $a + $b->size }, 0);
+    my $sales = $self->carts->reduce(sub { $a + $b->total }, Money(0));
+    my $customers = $self->carts->size;
+    say sprintf "You sold %d items (%s) to %d customers.", $items, $sales, $customers;
+    $self->store;
+    $self->carts(undef);
+    say sprintf "%s is now closed!\n", $self->name;
+  }
+  ReadMode 'normal';
+}
+
+sub dump ($self) {
+  return unless $self->is_open(1);
+  $self->inventory->each(sub {
+    my $barcode = $_->barcode;
+    say sprintf "%-20s | %-30s | %10s | %3s | %3s", $_->barcode, $_->name, $_->cost, $_->inventory, $self->carts->map(sub { $_->items->grep(sub { $_->barcode eq $barcode })->size })->reduce(sub { $a + $b }, 0);
+  });
+  print "\n";
+}
+
+sub edit_item ($self, $item) {
+  say sprintf "Editing %s (%s)", $item->name, $item->barcode;
+  my $barcode = $item->barcode;
+  print "New name for barcode $barcode: ";
+  chomp(my $name = <STDIN>);
+  $name = $item->name unless $name;
+  print "$name new cost: ";
+  chomp(my $cost = <STDIN>);
+  $cost = substr($cost, 0, 5);
+  $cost =~ s/[^\d\.]//g;
+  $cost = $item->cost unless looks_like_number($cost);
+  print "$name new quantity: ";
+  chomp(my $qty = <STDIN>);
+  $qty = substr($qty, 0, 5);
+  $qty =~ s/\D//g;
+  $qty = $item->inventory unless looks_like_number($qty);
+  $self->inventory->first(sub{$_->barcode eq $barcode})->name($name)->cost($cost)->inventory($qty);
+  say sprintf "Updated %s (%s) for %s in inventory!\n", $item->name, $item->barcode, $item->cost;
+  $self->store;
+}
+
+sub get_barcode ($self, $show=0) {
+  ReadMode 'noecho' unless $show;
+  chomp(my $barcode = <STDIN>);
+  ReadMode 'normal' unless $show;
+  $barcode = substr($barcode, 0, 20);
+  $barcode = chr hex $barcode =~ s/^%%//r if $barcode =~ /^%%/;
+  return $barcode;
+}
+
+sub in_stock ($self, $barcode) {
+  return 1 if 1;
+  say sprintf "Sold out of ";
+  return 0;
+}
+
+sub is_open ($self, $say=0) {
+  if (defined $self->inventory && ref $self->inventory eq 'Mojo::Collection' && defined $self->carts && ref $self->carts eq 'Mojo::Collection') {
+    return 1;
+  }
+  else {
+    say sprintf "%s is closed!  Come back later!\n", $self->name if $say;
+    return 0;
+  }
+}
+
+sub list ($self) {
+  my $cart = $self->carts->first(sub{!$_->finish}) or return;
+  my $c = 0;
+  return unless $cart->items;
+  $cart->items->each(sub {
+    say sprintf "%3d: %-20s %5s (%6s)", ++$c, $_->name, $_->cost, $cart->subtotal;
+  });
+}
+
+sub load ($self) {
+  say sprintf "Loading %s inventory!", $self->name;
+  $self->inventory(-e $self->file ? Storable::retrieve($self->file) : Mojo::Collection->new);
+  return $self;
+}
+
+sub new {
+  my $self = shift->SUPER::new(@_);
+  say sprintf "Welcome to %s!\n", $self->name;
+  $self->is_open(1);
+  return $self;
+}
+
+sub open ($self) {
+  if ($self->is_open) {
+    say sprintf "%s is already open\n", $self->name;
+  }
+  else {
+    $self->load;
+    $self->carts(Mojo::Collection->new);
+    say sprintf "\n%s is now open!\n", $self->name if $self->is_open;
+  }
+}
+
+sub remove_item ($self) {
+  print "Scan item to remove from inventory: ";
+  my $barcode = $self->get_barcode(1);
+  my $delete = 0;
+  $self->inventory($self->inventory->reduce(sub {
+    push @$a, $b unless $delete || $b->barcode eq $barcode;
+    $delete = 1 if $b->barcode eq $barcode;
+    return $a;
+  }, Mojo::Collection->new));
+  say "Removed $barcode";
+  $self->store;
+}
+
+sub store ($self) {
+  say sprintf "Storing %s inventory!", $self->name;
+  Storable::store($self->inventory, $self->file);
+  return $self;
+}
+
+package main;
+BEGIN { $ENV{PERL_RL} = "Gnu"; }
+
+#use Mojolicious::Lite -signatures;
+use Mojo::Base -strict, -signatures;
+
+use Math::Currency qw(Money);
+
+use constant DB_FILE => $0.'.db';
+use constant VOID_ITEM => '536648';
+use constant LIST => '832189';
+use constant END_SALE => '746295';
+use constant OPEN_STORE => '527759';
+use constant DUMP => '495805';
+use constant ADD_ITEM => '320354';
+use constant REMOVE_ITEM => '259716';
+use constant CLOSE_STORE => '187712';
+
+# get '/' => {text => 'hi'};
+
+# app->start;
+
+$SIG{INT} = $SIG{TERM} = $SIG{QUIT} = \&goodbye;
+
+my $store = Store->new(file => DB_FILE, name => $ARGV[0]);
+
+sub goodbye { $store->close; exit }
+
+while (1) {
+  my $barcode = $store->get_barcode or next;	
+ 
+  if ($barcode eq OPEN_STORE || $barcode eq 'OO') {
+    $store->open;
+    next;
+  }
+  elsif ($barcode eq CLOSE_STORE || $barcode eq '==') {
+    $store->close;
+    next;
+  }
+
+  next unless $store->is_open(1);
+
+  if ($barcode eq DUMP || $barcode eq '~~') {
+    $store->dump;
+    next;
+  }
+  elsif ($barcode eq ADD_ITEM || $barcode eq '++') {
+    $store->add_item;
+    next;
+  }
+  elsif ($barcode eq REMOVE_ITEM || $barcode eq '--') {
+    $store->remove_item;
+    next;
+  }
+  elsif ($barcode eq LIST || $barcode eq '?') {
+    $store->list;
+    next;
+  }
+  elsif ($barcode eq VOID_ITEM || $barcode eq '-') {
+    $store->carts->first(sub{!$_->finish})->void_item($barcode);
+    next;
+  }
+  elsif ($barcode eq END_SALE || $barcode eq '=') {
+    $store->carts->first(sub{!$_->finish})->end_sale;
+    next;
+  }
+
+  my $cart = $store->cart;
+  my $item = $store->inventory->first(sub{$_->barcode eq $barcode});
+  if ($cart->add_item($item)) {
+    say sprintf "%3d: %-20s %5s (%6s)", $cart->size, $item->name, $item->cost, $cart->subtotal;
+  }
+  elsif ($item) {
+    say sprintf "Sold out of %s (%s)", $item->name, $item->barcode;
+  }
+  else {
+    say sprintf "No item $barcode";
+  }
+}
+
