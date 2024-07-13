@@ -1,6 +1,10 @@
 package MyApp::Controller::Example;
 use Mojo::Base 'Mojolicious::Controller', -signatures;
 
+sub barcode ($self) {
+  $self->render(text => $self->param('input'));
+}
+
 # This action will render a template
 sub welcome ($self) {
 
