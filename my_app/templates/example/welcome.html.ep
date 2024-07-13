@@ -1,4 +1,4 @@
-% layout 'default';
+% layout 'default1';
 % title 'Welcome';
 <h2><%= $msg %></h2>
 <p>

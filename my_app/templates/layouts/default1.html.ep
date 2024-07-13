@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keyboard Input without Focus</title>
+<style>
+  #close_store {
+    background-color: #f44336;
+    color: white;
+    display: none;
+  }
+  #open_store {
+    background-color: #4CAF50;
+    color: white;
+    display: none;
+  }
+</style>
+<script>
+var store_status = '';
+
+// Function to POST data to a specified URL and handle JSON response
+async function postDataAndGetResponse(url = '', data = {}) {
+  try {
+    const response = await fetch(url, {
+      method: 'POST', // Set method to POST
+      headers: {
+        'Content-Type': 'application/json', // Set content type to JSON
+      },
+      body: JSON.stringify(data), // Convert data into JSON string
+    });
+    if (!response.ok) {
+      // Check if response status is not OK, throw an error
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const jsonResponse = await response.json(); // Parse JSON response
+    console.log('Success:', jsonResponse); // Log success with data
+    return jsonResponse; // Return the JSON response
+  } catch (error) {
+    console.error('Error:', error); // Log errors, if any
+  }
+}
+
+document.addEventListener('DOMContentLoaded', (event) => {
+  postDataAndGetResponse('<%= url_for "store_status" %>', {}).then(data => {
+    console.log(data); // Handle the JSON response data
+    store_status = data.status;
+    if (data.status === 'open') {
+      document.getElementById('store_status').textContent = `The Store is Open`;
+      document.getElementById('open_store').style.display = 'none';
+      document.getElementById('close_store').style.display = 'block';
+    } else {
+      document.getElementById('store_status').textContent = `The Store is Closed`;
+      document.getElementById('open_store').style.display = 'block';
+      document.getElementById('close_store').style.display = 'none';
+    }
+  });
+
+  document.getElementById('open_store').addEventListener('click', function() {
+    // Assuming 'json' is your variable containing the data you want to send
+    const json = { key: 'value' }; // Replace this with your actual JSON data
+
+    // Replace '<%= url_for "your_endpoint" %>' with your actual endpoint URL
+    postDataAndGetResponse('<%= url_for "open_store" %>', json).then(data => {
+      console.log(data); // Handle the JSON response data
+      if (data.status === 'success') {
+        store_status = 'open';
+        document.getElementById('store_status').textContent = `The Store is Open`;
+        document.getElementById('open_store').style.display = 'none';
+        document.getElementById('close_store').style.display = 'block';
+      }
+    });
+  });
+
+  document.getElementById('close_store').addEventListener('click', function() {
+    // Assuming 'json' is your variable containing the data you want to send
+    const json = { key: 'value' }; // Replace this with your actual JSON data
+
+    // Replace '<%= url_for "your_endpoint" %>' with your actual endpoint URL
+    postDataAndGetResponse('<%= url_for "close_store" %>', json).then(data => {
+      console.log(data); // Handle the JSON response data
+      if (data.status === 'success') {
+        store_status = 'closed';
+        document.getElementById('store_status').textContent = `The Store is Closed`;
+        document.getElementById('open_store').style.display = 'block';
+        document.getElementById('close_store').style.display = 'none';
+      }
+    });
+  });
+
+  var barcoding = false;
+  var barcode = '';
+  document.body.addEventListener('keydown', (event) => {
+    if (store_status === 'closed') {
+      return;
+    }
+
+    // Display the key pressed
+    document.getElementById('keyPressed').textContent = `Key Pressed: ${event.key}`;
+    if (!barcoding) {
+      if (event.key === '%') {
+        // Start barcoding
+        barcoding = true;
+        barcode = '';
+      }
+    } else {
+      if (event.key === 'Enter' && barcode.length > 0) {
+        // End barcoding
+        barcoding = false;
+        document.getElementById('barcode').textContent = `Barcode: ${barcode}`;
+        postDataAndGetResponse('<%= url_for "get_barcode" %>', { barcode: barcode }).then(data => {
+          console.log(data); // Handle the JSON response data
+          document.getElementById('item').textContent = `Item: ${data.name}`;
+        });
+      }
+      else {
+        // Add to barcode
+        barcode += event.key;
+      }
+    }
+  });
+});
+</script>
+</head>
+<body>
+<h1 id="store_status">The Store is Closed</h1>
+<p id="keyPressed">Key Pressed: None</p>
+<p id="barcode"></p>
+<button id="open_store">Click this button to Open the Store</button>
+<button id="close_store">Click this button to Close the Store</button>
+<p id="item">Item: None</p>
+</body>
+</html>
