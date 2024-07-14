@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
       document.getElementById('store_status').textContent = `The Store is Closed`;
       document.getElementById('open_store').style.display = 'block';
       document.getElementById('close_store').style.display = 'none';
-      document.getElementById('maininfo').style.display = 'flex';
+      document.getElementById('maininfo').style.display = 'none';
     }
   });
 
@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
         document.getElementById('store_status').textContent = `The Store is Closed`;
         document.getElementById('open_store').style.display = 'block';
         document.getElementById('close_store').style.display = 'none';
-        document.getElementById('maininfo').style.display = 'flex';
+        document.getElementById('maininfo').style.display = 'none';
       }
     });
   });
